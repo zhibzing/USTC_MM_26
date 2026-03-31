@@ -27,10 +27,188 @@
 //   target_cols — target width  in pixels
 //
 // Returns: resized image of size (target_rows, target_cols)
+cv::Mat computeEnergy(const cv::Mat& img) {
+    cv::Mat gray;
+    cv::cvtColor(img, gray, cv::COLOR_BGR2GRAY);
+    
+    cv::Mat grad_x, grad_y;
+    cv::Sobel(gray, grad_x, CV_64F, 1, 0, 3);
+    cv::Sobel(gray, grad_y, CV_64F, 0, 1, 3);
+    
+    cv::Mat energy;
+    cv::magnitude(grad_x, grad_y, energy);
+    
+    return energy;
+}
+
+std::vector<int> findColSeam(const cv::Mat& energy) {
+    int rows = energy.rows;
+    int cols = energy.cols;
+    
+    cv::Mat dp(rows, cols, CV_64F);
+    energy.copyTo(dp);
+    cv::Mat parent(rows, cols, CV_32S);
+    
+    for (int j = 0; j < cols; ++j) {
+        parent.at<int>(0, j) = j;
+    }
+    
+    for (int i = 1; i < rows; ++i) {
+        for (int j = 0; j < cols; ++j) {
+            double min_prev = dp.at<double>(i-1, j);
+            int min_idx = j;
+            
+            if (j - 1 >= 0 && dp.at<double>(i-1, j-1) < min_prev) {
+                min_prev = dp.at<double>(i-1, j-1);
+                min_idx = j-1;
+            }
+            if (j + 1 < cols && dp.at<double>(i-1, j+1) < min_prev) {
+                min_prev = dp.at<double>(i-1, j+1);
+                min_idx = j+1;
+            }
+            
+            dp.at<double>(i, j) = energy.at<double>(i, j) + min_prev;
+            parent.at<int>(i, j) = min_idx;
+        }
+    }
+    
+    int min_col = 0;
+    double min_val = dp.at<double>(rows-1, 0);
+    for (int j = 1; j < cols; ++j) {
+        if (dp.at<double>(rows-1, j) < min_val) {
+            min_val = dp.at<double>(rows-1, j);
+            min_col = j;
+        }
+    }
+    
+    std::vector<int> seam(rows);
+    seam[rows-1] = min_col;
+    for (int i = rows-1; i > 0; --i) {
+        seam[i-1] = parent.at<int>(i, seam[i]);
+    }
+    
+    return seam;
+}
+
+std::vector<int> findRowSeam(const cv::Mat& energy) {
+    int rows = energy.rows;
+    int cols = energy.cols;
+    
+    cv::Mat dp(rows, cols, CV_64F);
+    energy.copyTo(dp);
+    cv::Mat parent(rows, cols, CV_32S);
+    
+    for (int i = 0; i < rows; ++i) {
+        parent.at<int>(i, 0) = i;
+    }
+    
+    for (int j = 1; j < cols; ++j) {
+        for (int i = 0; i < rows; ++i) {
+            double min_prev = dp.at<double>(i, j-1);
+            int min_idx = i;
+            
+            if (i > 0 && dp.at<double>(i-1, j-1) < min_prev) {
+                min_prev = dp.at<double>(i-1, j-1);
+                min_idx = i-1;
+            }
+            if (i < rows-1 && dp.at<double>(i+1, j-1) < min_prev) {
+                min_prev = dp.at<double>(i+1, j-1);
+                min_idx = i+1;
+            }
+            
+            dp.at<double>(i, j) = energy.at<double>(i, j) + min_prev;
+            parent.at<int>(i, j) = min_idx;
+        }
+    }
+    
+    int min_row = 0;
+    double min_val = dp.at<double>(0, cols-1);
+    for (int i = 1; i < rows; ++i) {
+        if (dp.at<double>(i, cols-1) < min_val) {
+            min_val = dp.at<double>(i, cols-1);
+            min_row = i;
+        }
+    }
+    
+    std::vector<int> seam(cols);
+    seam[cols-1] = min_row;
+    for (int j = cols-1; j > 0; --j) {
+        seam[j-1] = parent.at<int>(seam[j], j);
+    }
+    
+    return seam;
+}
+
+cv::Mat removeColSeam(const cv::Mat& img, const std::vector<int>& seam) {
+    int rows = img.rows;
+    int cols = img.cols;
+    
+    if (cols <= 1) return img.clone();
+    if (seam.size() != rows) return img.clone();
+    
+    cv::Mat result(rows, cols - 1, img.type());
+    
+    for (int i = 0; i < rows; ++i) {
+        int seam_col = seam[i];
+        seam_col = std::max(0, std::min(seam_col, cols - 1));
+        
+        if (seam_col > 0) {
+            img.row(i).colRange(0, seam_col).copyTo(result.row(i).colRange(0, seam_col));
+        }
+        if (seam_col + 1 < cols) {
+            img.row(i).colRange(seam_col + 1, cols).copyTo(result.row(i).colRange(seam_col, cols - 1));
+        }
+    }
+    
+    return result;
+}
+
+cv::Mat removeRowSeam(const cv::Mat& img, const std::vector<int>& seam) {
+    int rows = img.rows;
+    int cols = img.cols;
+    
+    if (rows <= 1) return img.clone();
+    if (seam.size() != cols) return img.clone();
+    
+    cv::Mat result(rows - 1, cols, img.type());
+    
+    for (int j = 0; j < cols; ++j) {
+        int seam_row = seam[j];
+        seam_row = std::max(0, std::min(seam_row, rows - 1));
+        
+        if (seam_row > 0) {
+            img.col(j).rowRange(0, seam_row).copyTo(result.col(j).rowRange(0, seam_row));
+        }
+        if (seam_row + 1 < rows) {
+            img.col(j).rowRange(seam_row + 1, rows).copyTo(result.col(j).rowRange(seam_row, rows - 1));
+        }
+    }
+    
+    return result;
+}
+
 cv::Mat seamCarveImage(cv::Mat img, int target_rows, int target_cols) {
     // TODO: replace with your implementation
-    (void)target_rows; (void)target_cols;
-    return img;
+    cv::Mat result = img.clone();
+    int cur_rows = result.rows;
+    int cur_cols = result.cols;
+    
+    while (cur_cols > target_cols) {
+        cv::Mat energy = computeEnergy(result);
+        std::vector<int> seam = findColSeam(energy);
+        result = removeColSeam(result, seam);
+        cur_cols--;
+    }
+    
+    while (cur_rows > target_rows) {
+        cv::Mat energy = computeEnergy(result);
+        std::vector<int> seam = findRowSeam(energy);
+        result = removeRowSeam(result, seam);
+        cur_rows--;
+    }
+    
+    std::cout << "Seam carving completed." << std::endl;
+    return result;
 }
 
 // ============================================================
@@ -77,7 +255,7 @@ int main(int argc, char* argv[]) {
         path = argv[1];
         g_src = cv::imread(path, cv::IMREAD_COLOR);
     } else {
-        for (const char* p : {"../figs/original.png", "../../figs/original.png"}) {
+        for (const char* p : {"../figs/original.png", "../../figs/original.png", "../../../figs/original.png"}) {
             g_src = cv::imread(p, cv::IMREAD_COLOR);
             if (!g_src.empty()) { path = p; break; }
         }
